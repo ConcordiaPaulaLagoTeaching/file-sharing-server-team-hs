@@ -145,13 +145,32 @@ public class FileServer {
                     return "SUCCESS: File '" + createFilename + "' created.";
                     
                 case "WRITE":
-                    return "ERROR: WRITE command not yet implemented";
+                    if (parts.length < 3) {
+                        throw new Exception("ERROR: WRITE command requires filename and content");
+                    }
+                    String writeFilename = parts[1];
+                    if (writeFilename.length() > 11) {
+                        return "ERROR: filename too large";
+                    }
+                    String content = parts[2];
+                    fsManager.writeFile(writeFilename, content.getBytes());
+                    return "SUCCESS: File '" + writeFilename + "' written.";
                     
                 case "READ":
-                    return "ERROR: READ command not yet implemented";
+                    if (parts.length < 2) {
+                        throw new Exception("ERROR: READ command requires a filename");
+                    }
+                    String readFilename = parts[1];
+                    byte[] fileContent = fsManager.readFile(readFilename);
+                    return "SUCCESS: " + new String(fileContent);
                     
                 case "DELETE":
-                    return "ERROR: DELETE command not yet implemented";
+                    if (parts.length < 2) {
+                        throw new Exception("ERROR: DELETE command requires a filename");
+                    }
+                    String deleteFilename = parts[1];
+                    fsManager.deleteFile(deleteFilename);
+                    return "SUCCESS: File '" + deleteFilename + "' deleted.";
                     
                 case "LIST":
                     String[] files = fsManager.listFiles();
