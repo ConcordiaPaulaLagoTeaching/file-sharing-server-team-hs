@@ -285,3 +285,127 @@ public class FileSystemManager {
         }
     }
     
+    public void writeFile(String filename, byte[] contents) throws Exception {
+        if (filename.length() > 11) {
+            throw new Exception("ERROR: filename too large");
+        }
+        
+        readWriteLock.writeLock().lock();
+        try {
+            // Find file entry
+            int entryIndex = -1;
+            for (int i = 0; i < MAXFILES; i++) {
+                if (fentryTable[i] != null && fentryTable[i].getFilename().equals(filename)) {
+                    entryIndex = i;
+                    break;
+                }
+            }
+            
+            if (entryIndex == -1) {
+                throw new Exception("ERROR: file " + filename + " does not exist");
+            }
+            
+            // Calculate number of blocks needed
+            int blocksNeeded = (contents.length + BLOCK_SIZE - 1) / BLOCK_SIZE;
+            
+            // Check if we have enough free blocks
+            int freeBlocks = 0;
+            for (int i = 0; i < MAXBLOCKS; i++) {
+                if (freeBlockList[i]) {
+                    freeBlocks++;
+                }
+            }
+            
+            // Free old blocks first
+            FEntry entry = fentryTable[entryIndex];
+            int oldFirstBlock = entry.getFirstBlock();
+            int oldFNodeIndex = oldFirstBlock;
+            while (oldFNodeIndex != -1 && oldFNodeIndex >= 0 && oldFNodeIndex < MAXBLOCKS) {
+                FNode oldNode = fnodeTable[oldFNodeIndex];
+                int nextOldFNode = getFNodeNext(oldNode);
+                
+                // Mark as free
+                setFNodeBlockIndex(oldNode, -oldFNodeIndex); // Negative, magnitude = FNode index
+                setFNodeNext(oldNode, -1);
+                freeBlockList[oldFNodeIndex] = true;
+                
+                oldFNodeIndex = nextOldFNode;
+            }
+            
+            // Recalculate free blocks after freeing old ones
+            freeBlocks = 0;
+            for (int i = 0; i < MAXBLOCKS; i++) {
+                if (freeBlockList[i]) {
+                    freeBlocks++;
+                }
+            }
+            
+            if (blocksNeeded > freeBlocks) {
+                throw new Exception("ERROR: file too large");
+            }
+            
+            // Allocate blocks
+            List<Integer> allocatedFNodeIndices = new ArrayList<>();
+            int blocksAllocated = 0;
+            for (int i = 0; i < MAXBLOCKS && blocksAllocated < blocksNeeded; i++) {
+                if (freeBlockList[i]) {
+                    allocatedFNodeIndices.add(i);
+                    freeBlockList[i] = false;
+                    blocksAllocated++;
+                }
+            }
+            
+            // Link FNodes together
+            // According to spec: blockIndex magnitude is the FNode index, positive if in use
+            for (int i = 0; i < allocatedFNodeIndices.size(); i++) {
+                int fnodeIndex = allocatedFNodeIndices.get(i);
+                FNode node = fnodeTable[fnodeIndex];
+                
+                // Set blockIndex to positive fnodeIndex (magnitude = fnode index, positive = in use)
+                setFNodeBlockIndex(node, fnodeIndex);
+                
+                if (i < allocatedFNodeIndices.size() - 1) {
+                    setFNodeNext(node, allocatedFNodeIndices.get(i + 1));
+                } else {
+                    setFNodeNext(node, -1);
+                }
+            }
+            
+            // Update file entry
+            if (!allocatedFNodeIndices.isEmpty()) {
+                setFEntryFirstBlock(entry, (short) allocatedFNodeIndices.get(0).intValue());
+            } else {
+                setFEntryFirstBlock(entry, (short) -1);
+            }
+            entry.setFilesize((short) contents.length);
+            
+            // Write data to blocks
+            // The data block index is the FNode index (blockIndex value)
+            int contentOffset = 0;
+            for (int i = 0; i < allocatedFNodeIndices.size(); i++) {
+                int fnodeIndex = allocatedFNodeIndices.get(i);
+                FNode node = fnodeTable[fnodeIndex];
+                int dataBlockIndex = getFNodeBlockIndex(node); // This equals fnodeIndex
+                
+                long blockOffset = dataStartOffset + (long) dataBlockIndex * BLOCK_SIZE;
+                disk.seek(blockOffset);
+                
+                int bytesToWrite = Math.min(BLOCK_SIZE, contents.length - contentOffset);
+                disk.write(contents, contentOffset, bytesToWrite);
+                
+                // Fill rest of block with zeros if needed
+                if (bytesToWrite < BLOCK_SIZE) {
+                    byte[] zeros = new byte[BLOCK_SIZE - bytesToWrite];
+                    disk.write(zeros);
+                }
+                
+                contentOffset += bytesToWrite;
+            }
+            
+            // Write metadata to disk
+            writeMetadata();
+            disk.getFD().sync();
+        } finally {
+            readWriteLock.writeLock().unlock();
+        }
+    }
