@@ -409,3 +409,81 @@ public class FileSystemManager {
             readWriteLock.writeLock().unlock();
         }
     }
+    
+    public byte[] readFile(String filename) throws Exception {
+        readWriteLock.readLock().lock();
+        try {
+            // Find file entry
+            FEntry entry = null;
+            for (int i = 0; i < MAXFILES; i++) {
+                if (fentryTable[i] != null && fentryTable[i].getFilename().equals(filename)) {
+                    entry = fentryTable[i];
+                    break;
+                }
+            }
+            
+            if (entry == null) {
+                throw new Exception("ERROR: file " + filename + " does not exist");
+            }
+            
+            short fileSize = entry.getFilesize();
+            if (fileSize == 0) {
+                return new byte[0];
+            }
+            
+            byte[] result = new byte[fileSize];
+            int resultOffset = 0;
+            
+            // Traverse FNode chain
+            int currentFNodeIndex = entry.getFirstBlock();
+            while (currentFNodeIndex != -1 && currentFNodeIndex >= 0 && currentFNodeIndex < MAXBLOCKS) {
+                FNode node = fnodeTable[currentFNodeIndex];
+                int dataBlockIndex = getFNodeBlockIndex(node);
+                
+                // Safety check: blockIndex should be positive when in use
+                if (dataBlockIndex < 0 || dataBlockIndex >= MAXBLOCKS) {
+                    throw new Exception("ERROR: Invalid file system state");
+                }
+                
+                long blockOffset = dataStartOffset + (long) dataBlockIndex * BLOCK_SIZE;
+                disk.seek(blockOffset);
+                
+                int bytesToRead = Math.min(BLOCK_SIZE, fileSize - resultOffset);
+                disk.readFully(result, resultOffset, bytesToRead);
+                
+                resultOffset += bytesToRead;
+                
+                if (resultOffset >= fileSize) {
+                    break;
+                }
+                
+                currentFNodeIndex = getFNodeNext(node);
+            }
+            
+            return result;
+        } finally {
+            readWriteLock.readLock().unlock();
+        }
+    }
+    
+    public String[] listFiles() {
+        readWriteLock.readLock().lock();
+        try {
+            List<String> fileList = new ArrayList<>();
+            for (int i = 0; i < MAXFILES; i++) {
+                if (fentryTable[i] != null && !fentryTable[i].getFilename().isEmpty()) {
+                    fileList.add(fentryTable[i].getFilename());
+                }
+            }
+            return fileList.toArray(new String[0]);
+        } finally {
+            readWriteLock.readLock().unlock();
+        }
+    }
+    
+    public void close() throws Exception {
+        if (disk != null) {
+            disk.close();
+        }
+    }
+}
