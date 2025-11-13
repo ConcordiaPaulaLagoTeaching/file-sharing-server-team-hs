@@ -11,60 +11,168 @@ public class FileServer {
 
     private FileSystemManager fsManager;
     private int port;
-    public FileServer(int port, String fileSystemName, int totalSize){
-        // Initialize the FileSystemManager
-        FileSystemManager fsManager = new FileSystemManager(fileSystemName,
-                10*128 );
-        this.fsManager = fsManager;
+    private String fileSystemName;
+    private int totalSize;
+    private Exception initializationError;
+    
+    public FileServer(int port, String fileSystemName, int totalSize) {
+        // Store parameters for lazy initialization
         this.port = port;
+        this.fileSystemName = fileSystemName;
+        this.totalSize = totalSize;
+        this.initializationError = null;
+        
+        // Try to initialize FileSystemManager, but don't throw exception
+        try {
+            this.fsManager = new FileSystemManager(fileSystemName, totalSize);
+        } catch (Exception e) {
+            this.initializationError = e;
+            this.fsManager = null;
+        }
     }
 
     public void start(){
-        try (ServerSocket serverSocket = new ServerSocket(12345)) {
-            System.out.println("Server started. Listening on port 12345...");
+        // Check if initialization failed
+        if (initializationError != null) {
+            System.err.println("Failed to initialize file system: " + initializationError.getMessage());
+            initializationError.printStackTrace();
+            return;
+        }
+        
+        // If fsManager is still null, try to initialize it now
+        if (fsManager == null) {
+            try {
+                this.fsManager = new FileSystemManager(fileSystemName, totalSize);
+            } catch (Exception e) {
+                System.err.println("Failed to initialize file system: " + e.getMessage());
+                e.printStackTrace();
+                return;
+            }
+        }
+        
+        try (ServerSocket serverSocket = new ServerSocket(port)) {
+            System.out.println("Server started. Listening on port " + port + "...");
 
             while (true) {
                 Socket clientSocket = serverSocket.accept();
-                System.out.println("Handling client: " + clientSocket);
-                try (
-                        BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
-                        PrintWriter writer = new PrintWriter(clientSocket.getOutputStream(), true)
-                ) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        System.out.println("Received from client: " + line);
-                        String[] parts = line.split(" ");
-                        String command = parts[0].toUpperCase();
-
-                        switch (command) {
-                            case "CREATE":
-                                fsManager.createFile(parts[1]);
-                                writer.println("SUCCESS: File '" + parts[1] + "' created.");
-                                writer.flush();
-                                break;
-                            //TODO: Implement other commands READ, WRITE, DELETE, LIST
-                            case "QUIT":
-                                writer.println("SUCCESS: Disconnecting.");
-                                return;
-                            default:
-                                writer.println("ERROR: Unknown command.");
-                                break;
-                        }
-                    }
-                } catch (Exception e) {
-                    e.printStackTrace();
-                } finally {
-                    try {
-                        clientSocket.close();
-                    } catch (Exception e) {
-                        // Ignore
-                    }
-                }
+                System.out.println("New client connected: " + clientSocket.getRemoteSocketAddress());
+                
+                // Create a new thread for each client
+                ClientHandler handler = new ClientHandler(clientSocket, fsManager);
+                Thread clientThread = new Thread(handler);
+                clientThread.start();
             }
         } catch (Exception e) {
             e.printStackTrace();
             System.err.println("Could not start server on port " + port);
         }
     }
-
+    
+    /**
+     * ClientHandler class to handle each client connection in a separate thread
+     */
+    private static class ClientHandler implements Runnable {
+        private Socket clientSocket;
+        private FileSystemManager fsManager;
+        
+        public ClientHandler(Socket clientSocket, FileSystemManager fsManager) {
+            this.clientSocket = clientSocket;
+            this.fsManager = fsManager;
+        }
+        
+        @Override
+        public void run() {
+            try (
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+                    PrintWriter writer = new PrintWriter(clientSocket.getOutputStream(), true)
+            ) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.out.println("Received from client " + clientSocket.getRemoteSocketAddress() + ": " + line);
+                    
+                    try {
+                        String[] parts = line.split(" ", 3); // Split into max 3 parts for WRITE command
+                        if (parts.length == 0) {
+                            writer.println("ERROR: Empty command.");
+                            continue;
+                        }
+                        
+                        String command = parts[0].toUpperCase();
+                        String response = processCommand(command, parts);
+                        writer.println(response);
+                        writer.flush();
+                        
+                        // Handle QUIT command
+                        if ("QUIT".equals(command)) {
+                            break;
+                        }
+                    } catch (Exception e) {
+                        // Send error message to client but continue serving
+                        String errorMsg = e.getMessage();
+                        if (errorMsg != null && errorMsg.startsWith("ERROR:")) {
+                            writer.println(errorMsg);
+                        } else {
+                            writer.println("ERROR: " + e.getMessage());
+                        }
+                        writer.flush();
+                        System.err.println("Error processing command: " + e.getMessage());
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("Error handling client " + clientSocket.getRemoteSocketAddress() + ": " + e.getMessage());
+                e.printStackTrace();
+            } finally {
+                try {
+                    clientSocket.close();
+                    System.out.println("Client disconnected: " + clientSocket.getRemoteSocketAddress());
+                } catch (Exception e) {
+                    // Ignore
+                }
+            }
+        }
+        
+        private String processCommand(String command, String[] parts) throws Exception {
+            switch (command) {
+                case "CREATE":
+                    if (parts.length < 2) {
+                        throw new Exception("ERROR: CREATE command requires a filename");
+                    }
+                    String createFilename = parts[1];
+                    if (createFilename.length() > 11) {
+                        return "ERROR: filename too large";
+                    }
+                    fsManager.createFile(createFilename);
+                    return "SUCCESS: File '" + createFilename + "' created.";
+                    
+                case "WRITE":
+                    return "ERROR: WRITE command not yet implemented";
+                    
+                case "READ":
+                    return "ERROR: READ command not yet implemented";
+                    
+                case "DELETE":
+                    return "ERROR: DELETE command not yet implemented";
+                    
+                case "LIST":
+                    String[] files = fsManager.listFiles();
+                    if (files.length == 0) {
+                        return "SUCCESS: No files in the system.";
+                    }
+                    StringBuilder fileList = new StringBuilder("SUCCESS: ");
+                    for (int i = 0; i < files.length; i++) {
+                        fileList.append(files[i]);
+                        if (i < files.length - 1) {
+                            fileList.append(", ");
+                        }
+                    }
+                    return fileList.toString();
+                    
+                case "QUIT":
+                    return "SUCCESS: Disconnecting.";
+                    
+                default:
+                    return "ERROR: Unknown command.";
+            }
+        }
+    }
 }
