@@ -11,11 +11,19 @@ import java.util.List;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
+/**
+ * ASSIGNMENT PART: File System Operations
+ * This class implements the file system simulator with all required operations:
+ * createFile, deleteFile, writeFile, readFile, and listFiles
+ */
 public class FileSystemManager {
 
     private final int MAXFILES;
     private final int MAXBLOCKS;
     private final RandomAccessFile disk;
+    
+    // ASSIGNMENT PART: Synchronization - ReadWriteLock for thread-safe file operations
+    // Allows multiple readers concurrently, but only one writer at a time
     private final ReadWriteLock readWriteLock = new ReentrantReadWriteLock();
     
     private static final int BLOCK_SIZE = 128;
@@ -193,19 +201,57 @@ public class FileSystemManager {
         }
         
         disk.getFD().sync(); // Force write to disk
+        // Also force channel sync for more aggressive persistence
+        if (disk.getChannel() != null) {
+            disk.getChannel().force(true);
+        }
     }
     
+    /**
+     * ASSIGNMENT PART: File System Operations - createFile
+     * Creates a new empty file in the filesystem
+     */
     public void createFile(String fileName) throws Exception {
         if (fileName.length() > 11) {
-            throw new Exception("ERROR: filename too large");
+            throw new Exception("ERROR: filename too long");
         }
         
+        // ASSIGNMENT PART: Synchronization - Acquire write lock (exclusive access)
         readWriteLock.writeLock().lock();
         try {
-            // Check if file already exists
+            // Check if file already exists - delete it first if it does
             for (int i = 0; i < MAXFILES; i++) {
                 if (fentryTable[i] != null && fentryTable[i].getFilename().equals(fileName)) {
-                    throw new Exception("ERROR: file " + fileName + " already exists");
+                    // File exists, delete it first
+                    FEntry entry = fentryTable[i];
+                    short firstBlockIndex = entry.getFirstBlock();
+                    
+                    // Free all blocks used by this file
+                    int currentFNodeIndex = firstBlockIndex;
+                    while (currentFNodeIndex != -1 && currentFNodeIndex >= 0 && currentFNodeIndex < MAXBLOCKS) {
+                        FNode currentNode = fnodeTable[currentFNodeIndex];
+                        int dataBlockIndex = getFNodeBlockIndex(currentNode);
+                        
+                        // Overwrite data block with zeros
+                        if (dataBlockIndex >= 0) {
+                            long blockOffset = dataStartOffset + (long) dataBlockIndex * BLOCK_SIZE;
+                            disk.seek(blockOffset);
+                            byte[] zeros = new byte[BLOCK_SIZE];
+                            disk.write(zeros);
+                        }
+                        
+                        // Mark FNode as free
+                        int nextFNodeIndex = getFNodeNext(currentNode);
+                        setFNodeBlockIndex(currentNode, -currentFNodeIndex);
+                        setFNodeNext(currentNode, -1);
+                        freeBlockList[currentFNodeIndex] = true;
+                        
+                        currentFNodeIndex = nextFNodeIndex;
+                    }
+                    
+                    // Clear file entry
+                    fentryTable[i] = new FEntry("", (short) 0, (short) -1);
+                    break;
                 }
             }
             
@@ -227,12 +273,19 @@ public class FileSystemManager {
             
             // Write metadata to disk
             writeMetadata();
+            disk.getFD().sync(); // Force sync to ensure persistence
         } finally {
+            // ASSIGNMENT PART: Synchronization - Always release lock in finally block
             readWriteLock.writeLock().unlock();
         }
     }
     
+    /**
+     * ASSIGNMENT PART: File System Operations - deleteFile
+     * Deletes a file and overwrites its data blocks with zeros for security
+     */
     public void deleteFile(String fileName) throws Exception {
+        // ASSIGNMENT PART: Synchronization - Acquire write lock (exclusive access)
         readWriteLock.writeLock().lock();
         try {
             // Find file entry
@@ -279,17 +332,25 @@ public class FileSystemManager {
             
             // Write metadata to disk
             writeMetadata();
-            disk.getFD().sync();
+            disk.getFD().sync(); // Force sync to disk
         } finally {
+            // ASSIGNMENT PART: Synchronization - Always release lock in finally block
             readWriteLock.writeLock().unlock();
         }
     }
     
+    /**
+     * ASSIGNMENT PART: File System Operations - writeFile
+     * Writes content to a file, overwriting any existing data.
+     * Operation is atomic - either fully succeeds or fails with no changes.
+     */
     public void writeFile(String filename, byte[] contents) throws Exception {
         if (filename.length() > 11) {
-            throw new Exception("ERROR: filename too large");
+            throw new Exception("ERROR: filename too long");
         }
         
+        // ASSIGNMENT PART: Synchronization - Acquire write lock (exclusive access)
+        // No readers allowed while writing
         readWriteLock.writeLock().lock();
         try {
             // Find file entry
@@ -371,7 +432,7 @@ public class FileSystemManager {
                 }
             }
             
-            // Update file entry
+            // Update file entry FIRST (in memory)
             if (!allocatedFNodeIndices.isEmpty()) {
                 setFEntryFirstBlock(entry, (short) allocatedFNodeIndices.get(0).intValue());
             } else {
@@ -379,7 +440,7 @@ public class FileSystemManager {
             }
             entry.setFilesize((short) contents.length);
             
-            // Write data to blocks
+            // Write data to blocks FIRST
             // The data block index is the FNode index (blockIndex value)
             int contentOffset = 0;
             for (int i = 0; i < allocatedFNodeIndices.size(); i++) {
@@ -402,15 +463,33 @@ public class FileSystemManager {
                 contentOffset += bytesToWrite;
             }
             
-            // Write metadata to disk
-            writeMetadata();
+            // CRITICAL: Sync data blocks to disk BEFORE writing metadata
+            // This ensures data is persisted even if process is killed after metadata write
             disk.getFD().sync();
+            if (disk.getChannel() != null) {
+                disk.getChannel().force(true);
+            }
+            
+            // NOW write metadata (which points to the data blocks we just wrote)
+            writeMetadata();
+            // Sync metadata to ensure it's also persisted
+            disk.getFD().sync();
+            if (disk.getChannel() != null) {
+                disk.getChannel().force(true);
+            }
         } finally {
+            // ASSIGNMENT PART: Synchronization - Always release lock in finally block
             readWriteLock.writeLock().unlock();
         }
     }
     
+    /**
+     * ASSIGNMENT PART: File System Operations - readFile
+     * Reads and returns the contents of a file
+     */
     public byte[] readFile(String filename) throws Exception {
+        // ASSIGNMENT PART: Synchronization - Acquire read lock (allows multiple concurrent readers)
+        // Multiple readers can read at the same time, but writers must wait
         readWriteLock.readLock().lock();
         try {
             // Find file entry
@@ -462,11 +541,17 @@ public class FileSystemManager {
             
             return result;
         } finally {
+            // ASSIGNMENT PART: Synchronization - Always release lock in finally block
             readWriteLock.readLock().unlock();
         }
     }
     
+    /**
+     * ASSIGNMENT PART: File System Operations - listFiles
+     * Returns a list of all filenames in the filesystem
+     */
     public String[] listFiles() {
+        // ASSIGNMENT PART: Synchronization - Acquire read lock (allows multiple concurrent readers)
         readWriteLock.readLock().lock();
         try {
             List<String> fileList = new ArrayList<>();
@@ -477,6 +562,7 @@ public class FileSystemManager {
             }
             return fileList.toArray(new String[0]);
         } finally {
+            // ASSIGNMENT PART: Synchronization - Always release lock in finally block
             readWriteLock.readLock().unlock();
         }
     }
