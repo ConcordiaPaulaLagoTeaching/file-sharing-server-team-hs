@@ -7,6 +7,10 @@ import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
 
+/**
+ * ASSIGNMENT PART: Server/Client Architecture and Sockets
+ * This class implements the file-sharing server that handles client connections via sockets.
+ */
 public class FileServer {
 
     private FileSystemManager fsManager;
@@ -50,6 +54,7 @@ public class FileServer {
             }
         }
         
+        // ASSIGNMENT PART: Server/Client Architecture - Create server socket
         try (ServerSocket serverSocket = new ServerSocket(port)) {
             System.out.println("Server started. Listening on port " + port + "...");
 
@@ -57,7 +62,8 @@ public class FileServer {
                 Socket clientSocket = serverSocket.accept();
                 System.out.println("New client connected: " + clientSocket.getRemoteSocketAddress());
                 
-                // Create a new thread for each client
+                // ASSIGNMENT PART: Multithreading - Create new thread for each client
+                // This allows server to handle multiple clients concurrently
                 ClientHandler handler = new ClientHandler(clientSocket, fsManager);
                 Thread clientThread = new Thread(handler);
                 clientThread.start();
@@ -69,7 +75,9 @@ public class FileServer {
     }
     
     /**
-     * ClientHandler class to handle each client connection in a separate thread
+     * ASSIGNMENT PART: Multithreading
+     * ClientHandler class - Each client connection runs in its own thread.
+     * This implements Runnable to allow concurrent handling of multiple clients.
      */
     private static class ClientHandler implements Runnable {
         private Socket clientSocket;
@@ -91,9 +99,17 @@ public class FileServer {
                     System.out.println("Received from client " + clientSocket.getRemoteSocketAddress() + ": " + line);
                     
                     try {
-                        String[] parts = line.split(" ", 3); // Split into max 3 parts for WRITE command
-                        if (parts.length == 0) {
+                        // Handle empty line - always respond with error, don't close connection
+                        if (line == null || line.trim().isEmpty()) {
                             writer.println("ERROR: Empty command.");
+                            writer.flush();
+                            continue;
+                        }
+                        
+                        String[] parts = line.split(" ", 3); // Split into max 3 parts for WRITE command
+                        if (parts.length == 0 || (parts.length > 0 && (parts[0] == null || parts[0].trim().isEmpty()))) {
+                            writer.println("ERROR: Empty command.");
+                            writer.flush();
                             continue;
                         }
                         
@@ -107,14 +123,21 @@ public class FileServer {
                             break;
                         }
                     } catch (Exception e) {
-                        // Send error message to client but continue serving
-                        String errorMsg = e.getMessage();
-                        if (errorMsg != null && errorMsg.startsWith("ERROR:")) {
-                            writer.println(errorMsg);
-                        } else {
-                            writer.println("ERROR: " + e.getMessage());
+                        // ASSIGNMENT PART: Error Handling
+                        // Server displays errors to client but continues serving requests.
+                        // Client can send another request after an error.
+                        try {
+                            String errorMsg = e.getMessage();
+                            if (errorMsg != null && errorMsg.startsWith("ERROR:")) {
+                                writer.println(errorMsg);
+                            } else {
+                                writer.println("ERROR: " + (errorMsg != null ? errorMsg : "Unknown error"));
+                            }
+                            writer.flush();
+                        } catch (Exception ex) {
+                            // If we can't send error, just log it but don't break the loop
+                            System.err.println("Error sending error message: " + ex.getMessage());
                         }
-                        writer.flush();
                         System.err.println("Error processing command: " + e.getMessage());
                     }
                 }
@@ -131,8 +154,13 @@ public class FileServer {
             }
         }
         
+        /**
+         * ASSIGNMENT PART: Server Commands
+         * Processes client commands: CREATE, WRITE, READ, DELETE, LIST
+         */
         private String processCommand(String command, String[] parts) throws Exception {
             switch (command) {
+                // ASSIGNMENT PART: CREATE command - Creates a new empty file
                 case "CREATE":
                     if (parts.length < 2) {
                         throw new Exception("ERROR: CREATE command requires a filename");
@@ -144,6 +172,7 @@ public class FileServer {
                     fsManager.createFile(createFilename);
                     return "SUCCESS: File '" + createFilename + "' created.";
                     
+                // ASSIGNMENT PART: WRITE command - Writes content to a file
                 case "WRITE":
                     if (parts.length < 3) {
                         throw new Exception("ERROR: WRITE command requires filename and content");
@@ -156,6 +185,7 @@ public class FileServer {
                     fsManager.writeFile(writeFilename, content.getBytes());
                     return "SUCCESS: File '" + writeFilename + "' written.";
                     
+                // ASSIGNMENT PART: READ command - Reads and returns file contents
                 case "READ":
                     if (parts.length < 2) {
                         throw new Exception("ERROR: READ command requires a filename");
@@ -164,6 +194,7 @@ public class FileServer {
                     byte[] fileContent = fsManager.readFile(readFilename);
                     return "SUCCESS: " + new String(fileContent);
                     
+                // ASSIGNMENT PART: DELETE command - Deletes a file
                 case "DELETE":
                     if (parts.length < 2) {
                         throw new Exception("ERROR: DELETE command requires a filename");
@@ -172,6 +203,7 @@ public class FileServer {
                     fsManager.deleteFile(deleteFilename);
                     return "SUCCESS: File '" + deleteFilename + "' deleted.";
                     
+                // ASSIGNMENT PART: LIST command - Lists all files in the system
                 case "LIST":
                     String[] files = fsManager.listFiles();
                     if (files.length == 0) {
